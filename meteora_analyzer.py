@@ -997,29 +997,30 @@ def save_to_excel(
                 factor for factor, present in pair["risk"]["factors"].items() if present
             )
 
-            row = [
+            # Store numerical values directly, apply number formatting for display
+            row_values = [
                 pair["recommendation"]["action"],
-                f"{pair['scores']['total']:.1f}",
+                pair["scores"]["total"],  # Store as number
                 f"{pair['risk']['rating']} - {pair['risk']['description']}",
                 f"{pair['baseToken']['symbol']}-{pair['quoteToken']['symbol']}",
                 pair["baseToken"]["symbol"],
                 pair["quoteToken"]["symbol"],
-                pair["bin_step"],
-                f"{pair['base_fee'] * 100:.1f}%",
-                f"${pair['tvl']:,.2f}",
-                f"${pair.get('fdv', 0):,.2f}",
-                f"${pair['volume']['raw']['m5']:,.2f}",
-                f"${pair['volume']['raw']['h1']:,.2f}",
-                f"${pair['volume']['raw']['h24']:,.2f}",
-                f"${pair['fees']['raw']['m5']:,.2f}",
-                f"${pair['fees']['raw']['h1']:,.2f}",
-                f"${pair['fees']['raw']['h24']:,.2f}",
-                f"{pair['ratios']['volume_to_tvl']['m5']:.3f}",
-                f"{pair['ratios']['volume_to_tvl']['h1']:.3f}",
-                f"{pair['ratios']['volume_to_tvl']['h24']:.3f}",
-                f"{pair['momentum']['5m']:.2f}",
-                f"{pair['momentum']['1h']:.2f}",
-                f"{pair['momentum']['6h']:.2f}",
+                int(pair["bin_step"]),  # Store as integer
+                pair["base_fee"] * 100,  # Store as number
+                pair["tvl"],  # Store as number
+                pair.get("fdv", 0),  # Store as number
+                pair["volume"]["raw"]["m5"],  # Store as number
+                pair["volume"]["raw"]["h1"],  # Store as number
+                pair["volume"]["raw"]["h24"],  # Store as number
+                pair["fees"]["raw"]["m5"],  # Store as number
+                pair["fees"]["raw"]["h1"],  # Store as number
+                pair["fees"]["raw"]["h24"],  # Store as number
+                pair["ratios"]["volume_to_tvl"]["m5"],  # Store as number
+                pair["ratios"]["volume_to_tvl"]["h1"],  # Store as number
+                pair["ratios"]["volume_to_tvl"]["h24"],  # Store as number
+                pair["momentum"]["5m"],  # Store as number
+                pair["momentum"]["1h"],  # Store as number
+                pair["momentum"]["6h"],  # Store as number
                 score_details,
                 risk_factors if risk_factors else "None",
                 "Yes" if pair["strict"] else "No",
@@ -1050,9 +1051,28 @@ def save_to_excel(
                 ),
             ]
 
-            for col, value in enumerate(row, 1):
+            for col, value in enumerate(row_values, 1):
                 cell = ws.cell(row=row_idx, column=col)
                 cell.value = value
+
+                # Apply number formatting
+                if col == 2:  # Score
+                    cell.number_format = "0.0"
+                elif col == 8:  # Fees %
+                    cell.number_format = "0.0%"
+                elif col in {9, 10}:  # TVL, FDV
+                    cell.number_format = '"$"#,##0.00'
+                elif col in {11, 12, 13}:  # Volume columns
+                    cell.number_format = '"$"#,##0.00'
+                    apply_volume_formatting(cell, str(value))
+                elif col in {14, 15, 16}:  # Fee columns
+                    cell.number_format = '"$"#,##0.00'
+                    apply_fee_formatting(cell, str(value))
+                elif col in {17, 18, 19}:  # Vol/TVL ratios
+                    cell.number_format = "0.000"
+                elif col in {20, 21, 22}:  # Momentum columns
+                    cell.number_format = "0.00"
+                    apply_momentum_formatting(cell, str(value))
 
                 # Apply hyperlink formatting for link columns
                 if col in {26, 27, 28, 29, 30}:  # Link columns
@@ -1061,14 +1081,6 @@ def save_to_excel(
                         underline="single",
                     )  # Office blue color
                     cell.alignment = Alignment(horizontal="left")
-
-                # Apply color formatting
-                if col in {11, 12, 13}:  # Volume columns
-                    apply_volume_formatting(cell, value)
-                elif col in {14, 15, 16}:  # Fee columns
-                    apply_fee_formatting(cell, value)
-                elif col in {20, 21, 22}:  # Momentum columns
-                    apply_momentum_formatting(cell, value)
 
         # Create table
         tab = Table(
