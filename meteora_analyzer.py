@@ -93,8 +93,8 @@ class Config:
     SECONDS_IN_MINUTE: ClassVar[int] = 60
 
     # Scoring thresholds
-    VOLATILITY_THRESHOLD: ClassVar[float] = 1.2
     EXTREME_VOLATILITY_THRESHOLD: ClassVar[float] = 3.0
+    VOLATILITY_THRESHOLD: ClassVar[float] = 1.2  # Minimum volatility for scoring
     LOW_CAPITAL_EFFICIENCY_THRESHOLD: ClassVar[float] = 0.5
     LOW_FEE_YIELD_THRESHOLD: ClassVar[float] = 0.3
 
@@ -338,9 +338,17 @@ class DataProcessor:
             * 20,  # 20 points max for fee yield
             # Volatility is good for DLMM (dynamic fees increase)
             "volatility": (
-                (1.2 < pair["momentum"]["5m"] < Config.EXTREME_VOLATILITY_THRESHOLD)
+                (
+                    Config.VOLATILITY_THRESHOLD
+                    < pair["momentum"]["5m"]
+                    < Config.EXTREME_VOLATILITY_THRESHOLD
+                )
                 * 5  # Reward moderate volatility
-                + (1.2 < pair["momentum"]["1h"] < Config.EXTREME_VOLATILITY_THRESHOLD)
+                + (
+                    Config.VOLATILITY_THRESHOLD
+                    < pair["momentum"]["1h"]
+                    < Config.EXTREME_VOLATILITY_THRESHOLD
+                )
                 * 5
             ),  # 10 points max for good volatility
             # Minimum liquidity still matters but less important
