@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import aiohttp
 import openpyxl
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 if TYPE_CHECKING:
     from openpyxl.worksheet.worksheet import Worksheet
@@ -67,9 +69,9 @@ class Config:
     LOG_LEVEL: ClassVar[int] = logging.INFO
 
     # Blue chip tokens
-    BLUE_CHIPS: ClassVar[list[str]] = [
+    BLUE_CHIPS: ClassVar[set[str]] = {
         token.lower()
-        for token in [
+        for token in (
             "USDC",
             "SOL",
             "USDT",
@@ -84,8 +86,8 @@ class Config:
             "LST",
             "mSOL",
             "zippySOL",
-        ]
-    ]
+        )
+    }
 
     # Time constants
     SECONDS_IN_MINUTE: ClassVar[int] = 60
@@ -112,6 +114,9 @@ class Config:
     LOW_RISK_RATING: ClassVar[int] = 2
     MEDIUM_RISK_RATING: ClassVar[int] = 3
     HIGH_RISK_RATING: ClassVar[int] = 4
+
+    # Configuration
+    MIN_TVL_THRESHOLD: ClassVar[float] = 10_000  # Minimum $10k TVL
 
 
 @dataclass
@@ -327,20 +332,20 @@ class DataProcessor:
         score_components = {
             # Volume is still important but we care more about volume/TVL ratio
             "capital_efficiency": min(pair["ratios"]["volume_to_tvl"]["h24"], 3)
-            * 25,  # 25 points for good capital utilization
+            * 15,  # 45 points max for capital utilization
             # Dynamic fees are a key DLMM feature
-            "fee_yield": min(pair["ratios"]["fees_to_tvl"]["h24"] / 1, 1)
-            * 30,  # 30 points for good fee yield
+            "fee_yield": min(pair["ratios"]["fees_to_tvl"]["h24"] / 2, 1)
+            * 20,  # 20 points max for fee yield
             # Volatility is good for DLMM (dynamic fees increase)
             "volatility": (
-                (pair["momentum"]["5m"] > Config.VOLATILITY_THRESHOLD)
-                * 5  # Reward higher volatility
-                + (pair["momentum"]["1h"] > Config.VOLATILITY_THRESHOLD) * 5
-                + (pair["momentum"]["6h"] > Config.VOLATILITY_THRESHOLD) * 5
-            ),
+                (1.2 < pair["momentum"]["5m"] < Config.EXTREME_VOLATILITY_THRESHOLD)
+                * 5  # Reward moderate volatility
+                + (1.2 < pair["momentum"]["1h"] < Config.EXTREME_VOLATILITY_THRESHOLD)
+                * 5
+            ),  # 10 points max for good volatility
             # Minimum liquidity still matters but less important
-            "base_liquidity": min(pair["tvl"] / 10_000, 1)
-            * 10,  # 10 points for basic liquidity
+            "base_liquidity": min(pair["tvl"] / 100_000, 1)
+            * 15,  # 15 points for good liquidity
             # Bin step is important for concentrated liquidity
             "bin_quality": (
                 10
@@ -361,16 +366,20 @@ class DataProcessor:
                 # Acceptable range
                 else 0  # Too narrow or wide
             ),
-            # Safety is still relevant but less weighted
+            # Safety is still relevant
             "safety": (
-                (8 if pair["strict"] else 0)  # 8 points for strict list
-                + (7 if pair["bluechip"] else 0)  # 7 points for bluechip
+                (5 if pair["strict"] else 0)  # 5 points for strict list
+                + (5 if pair["bluechip"] else 0)  # 5 points for bluechip
             ),
         }
 
+        # Normalize score to 100
+        total_raw_score = sum(score_components.values())
+        normalized_score = min(total_raw_score, 100)  # Cap at 100
+
         pair["scores"] = {
             "components": score_components,
-            "total": sum(score_components.values()),
+            "total": normalized_score,
         }
 
         # Calculate risk rating (1-5, 1 being safest)
@@ -380,7 +389,9 @@ class DataProcessor:
             "low_fee_yield": pair["ratios"]["fees_to_tvl"]["h24"]
             < Config.LOW_FEE_YIELD_THRESHOLD,  # Low fee generation
             "extreme_volatility": any(
-                m > Config.EXTREME_VOLATILITY_THRESHOLD
+                m
+                > Config.EXTREME_VOLATILITY_THRESHOLD
+                * 1.5  # Lower the extreme threshold
                 for m in pair["momentum"].values()
             ),  # Too volatile
             "poor_bin_step": (
@@ -390,19 +401,39 @@ class DataProcessor:
             ),  # Poor bin configuration
             "non_strict": not pair["strict"],  # Not on Jupiter strict list
             "non_bluechip": not pair["bluechip"],  # Not a bluechip pair
+            "low_tvl": pair["tvl"]
+            < Config.MIN_TVL_THRESHOLD * 2,  # Higher TVL requirement
         }
 
-        risk_score = sum(risk_factors.values())
+        # Weight the risk factors
+        weighted_risk_score = sum(
+            [
+                2
+                if risk_factors["extreme_volatility"]
+                else 0,  # Higher weight for volatility
+                2 if risk_factors["low_tvl"] else 0,  # Higher weight for low TVL
+                1.5 if risk_factors["low_capital_efficiency"] else 0,
+                1.5 if risk_factors["low_fee_yield"] else 0,
+                1 if risk_factors["poor_bin_step"] else 0,
+                1 if risk_factors["non_strict"] else 0,
+                1 if risk_factors["non_bluechip"] else 0,
+            ],
+        )
+
+        risk_rating = min(
+            max(int(weighted_risk_score) + 1, 1),
+            5,
+        )  # Convert to 1-5 scale
         pair["risk"] = {
             "factors": risk_factors,
-            "rating": min(max(risk_score + 1, 1), 5),  # Convert to 1-5 scale
+            "rating": risk_rating,
             "description": {
                 1: "Very Safe - Efficient capital use with good fee generation",
                 2: "Safe - Good metrics with manageable volatility",
                 3: "Moderate - Decent opportunity but watch bin positioning",
                 4: "High - Capital efficiency or fee concerns",
                 5: "Very High - Multiple efficiency/safety concerns",
-            }[min(max(risk_score + 1, 1), 5)],
+            }[risk_rating],
         }
 
         # Add investment recommendation
@@ -699,7 +730,7 @@ async def get_dex_screener_pairs(
 def create_hyperlink(url: str, text: str, for_excel: bool = False) -> str:
     """Create a hyperlink for CSV or Excel output."""
     if for_excel:
-        return f"[{text}] {url}"
+        return f'=HYPERLINK("{url}", "{text}")'
     return url
 
 
@@ -739,9 +770,10 @@ def save_to_csv(
             "Score Details",
             "Risk Factors",
             "Strict List",
-            "Base RugCheck",
-            "Quote RugCheck",
+            "RugCheck",
             "DEX Screener",
+            "GeckoTerminal",
+            "DexTools",
             "Meteora Market",
         ]
 
@@ -777,7 +809,7 @@ def save_to_csv(
                     pair["bin_step"],
                     f"{pair['base_fee'] * 100:.1f}%",
                     f"${pair['tvl']:,.2f}",
-                    f"${pair['fdv']:,.2f}",
+                    f"${pair.get('fdv', 0):,.2f}",
                     f"${pair['volume']['raw']['m5']:,.2f}",
                     f"${pair['volume']['raw']['h1']:,.2f}",
                     f"${pair['volume']['raw']['h24']:,.2f}",
@@ -794,24 +826,29 @@ def save_to_csv(
                     risk_factors if risk_factors else "None",
                     "Yes" if pair["strict"] else "No",
                     create_hyperlink(
-                        f"https://rugcheck.xyz/tokens/{pair['baseToken']['address']}",
-                        f"{pair['baseToken']['symbol']} RugCheck",
-                    )
-                    if pair["baseToken"]["symbol"].lower() not in Config.BLUE_CHIPS
-                    else "Blue Chip",
-                    create_hyperlink(
-                        f"https://rugcheck.xyz/tokens/{pair['quoteToken']['address']}",
-                        f"{pair['quoteToken']['symbol']} RugCheck",
-                    )
-                    if pair["quoteToken"]["symbol"].lower() not in Config.BLUE_CHIPS
-                    else "Blue Chip",
+                        f"https://rugcheck.xyz/tokens/{pair['pairAddress']}",
+                        "RugCheck",
+                        True,
+                    ),
                     create_hyperlink(
                         f"https://dexscreener.com/solana/{pair['pairAddress']}",
-                        "Price Chart",
+                        "DexScreener",
+                        True,
+                    ),
+                    create_hyperlink(
+                        f"https://www.geckoterminal.com/solana/pools/{pair['pairAddress']}",
+                        "GeckoTerminal",
+                        True,
+                    ),
+                    create_hyperlink(
+                        f"https://www.dextools.io/app/en/solana/pair-explorer/{pair['pairAddress']}",
+                        "DexTools",
+                        True,
                     ),
                     create_hyperlink(
                         f"https://app.meteora.ag/dlmm/{pair['pairAddress']}",
                         "Trade Now",
+                        True,
                     ),
                 ]
                 writer.writerow(row)
@@ -924,9 +961,10 @@ def save_to_excel(
             "Score Details",
             "Risk Factors",
             "Strict List",
-            "Base RugCheck",
-            "Quote RugCheck",
+            "RugCheck",
             "DEX Screener",
+            "GeckoTerminal",
+            "DexTools",
             "Meteora Market",
         ]
 
@@ -961,7 +999,7 @@ def save_to_excel(
                 pair["bin_step"],
                 f"{pair['base_fee'] * 100:.1f}%",
                 f"${pair['tvl']:,.2f}",
-                f"${pair['fdv']:,.2f}",
+                f"${pair.get('fdv', 0):,.2f}",
                 f"${pair['volume']['raw']['m5']:,.2f}",
                 f"${pair['volume']['raw']['h1']:,.2f}",
                 f"${pair['volume']['raw']['h24']:,.2f}",
@@ -978,22 +1016,23 @@ def save_to_excel(
                 risk_factors if risk_factors else "None",
                 "Yes" if pair["strict"] else "No",
                 create_hyperlink(
-                    f"https://rugcheck.xyz/tokens/{pair['baseToken']['address']}",
-                    f"{pair['baseToken']['symbol']} RugCheck",
+                    f"https://rugcheck.xyz/tokens/{pair['pairAddress']}",
+                    "RugCheck",
                     True,
-                )
-                if pair["baseToken"]["symbol"].lower() not in {*Config.BLUE_CHIPS}
-                else "Blue Chip",
-                create_hyperlink(
-                    f"https://rugcheck.xyz/tokens/{pair['quoteToken']['address']}",
-                    f"{pair['quoteToken']['symbol']} RugCheck",
-                    True,
-                )
-                if pair["quoteToken"]["symbol"].lower() not in {*Config.BLUE_CHIPS}
-                else "Blue Chip",
+                ),
                 create_hyperlink(
                     f"https://dexscreener.com/solana/{pair['pairAddress']}",
-                    "Price Chart",
+                    "DexScreener",
+                    True,
+                ),
+                create_hyperlink(
+                    f"https://www.geckoterminal.com/solana/pools/{pair['pairAddress']}",
+                    "GeckoTerminal",
+                    True,
+                ),
+                create_hyperlink(
+                    f"https://www.dextools.io/app/en/solana/pair-explorer/{pair['pairAddress']}",
+                    "DexTools",
                     True,
                 ),
                 create_hyperlink(
@@ -1008,22 +1047,26 @@ def save_to_excel(
                 cell.value = value
 
                 # Apply hyperlink formatting for link columns
-                if col in [26, 27, 28, 29]:  # Link columns
-                    cell.font = Font(color="0000FF", underline="single")
+                if col in {26, 27, 28, 29, 30}:  # Link columns
+                    cell.font = Font(
+                        color="0563C1",
+                        underline="single",
+                    )  # Office blue color
+                    cell.alignment = Alignment(horizontal="left")
 
                 # Apply color formatting
-                if col in [11, 12, 13]:  # Volume columns
+                if col in {11, 12, 13}:  # Volume columns
                     apply_volume_formatting(cell, value)
-                elif col in [14, 15, 16]:  # Fee columns
+                elif col in {14, 15, 16}:  # Fee columns
                     apply_fee_formatting(cell, value)
-                elif col in [20, 21, 22]:  # Momentum columns
+                elif col in {20, 21, 22}:  # Momentum columns
                     apply_momentum_formatting(cell, value)
 
         # Create table
-        tab = openpyxl.worksheet.table.Table(
+        tab = Table(
             displayName="MarketOpportunities",
-            ref=f"A1:{openpyxl.utils.get_column_letter(len(headers))}{len(sorted_data) + 1}",
-            tableStyleInfo=openpyxl.worksheet.table.TableStyleInfo(
+            ref=f"A1:{get_column_letter(len(headers))}{len(sorted_data) + 1}",
+            tableStyleInfo=TableStyleInfo(
                 name="TableStyleMedium12",
                 showFirstColumn=False,
                 showLastColumn=False,
