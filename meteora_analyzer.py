@@ -1121,7 +1121,12 @@ def save_data(
         save_to_csv(data)
 
 
-async def main():
+async def main(save_to_file: bool = True):
+    """Run the analyzer
+
+    Args:
+        save_to_file: Whether to save results to CSV/Excel file
+    """
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Meteora DLMM Pool Analyzer")
     parser.add_argument(
@@ -1166,11 +1171,14 @@ async def main():
             if enriched_pair:
                 opportunities.append(enriched_pair)
 
-        # Step 5: Save results
-        logger.info("Saving results...")
-        save_data(opportunities, args.format)
+        # Save to file only if requested
+        if save_to_file:
+            save_data(opportunities, args.format)
+            logger.info("Saved %d opportunities to file", len(opportunities))
 
-        logger.info("Analysis completed successfully")
+        # Return opportunities for database storage
+        return opportunities
+
     except Exception:
         logger.exception("Analysis failed")
         raise

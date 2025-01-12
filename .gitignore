@@ -4,3 +4,6 @@ __pycache__/meteora_analyzer.cpython-312.pyc
 __pycache__/test_meteora_analyzer.cpython-312-pytest-8.3.3.pyc
 market_opportunities.csv
 market_opportunities.xlsx
+.vscode/settings.json
+ennivalo.session.sql
+meteora_db.py
